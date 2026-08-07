@@ -85,3 +85,18 @@ class MassiveClient:
         """
         data = self.get(f"/v2/aggs/ticker/{symbol}/prev")
         return data
+
+    def get_news(self, symbol: str, limit: int = 10) -> dict:
+        """
+        Fetch recent news articles for a ticker.
+        
+        Args:
+            symbol: Stock ticker (e.g., "AAPL")
+            limit: Number of articles to fetch (default 10, max 50)
+        
+        Returns:
+            Dict with structure: {"results": [{"id": "...", "title": "...", 
+            "article_url": "...", "published_utc": "...", "description": "...", 
+            "publisher": {...}, "insights": [...]}]}
+        """
+        return self.get("/v2/reference/news", params={"ticker": symbol, "limit": min(limit, 50)})

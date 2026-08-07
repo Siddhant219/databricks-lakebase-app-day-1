@@ -28,6 +28,7 @@ _w = WorkspaceClient()
 
 TABLE_NAME = os.environ.get("MASSIVE_TABLE_NAME", "massive_records")
 WATCHLIST_TABLE_NAME = os.environ.get("WATCHLIST_TABLE_NAME", "watchlist")
+NEWS_TABLE_NAME = os.environ.get("NEWS_TABLE_NAME", "ticker_news")
 
 # Basic stock ticker shape check: 1-10 uppercase letters, with an optional
 # ".X" or ".XX" share-class suffix (e.g. "BRK.B"). This rejects obviously
@@ -58,6 +59,27 @@ def ensure_watchlist_table():
             latest_price NUMERIC,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (symbol, email)
+        )
+        """
+    )
+
+
+def ensure_news_table():
+    """Create the ticker news table in Lakebase if it doesn't exist yet."""
+    lakebase.run_write(
+        f"""
+        CREATE TABLE IF NOT EXISTS {NEWS_TABLE_NAME} (
+            article_id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            title TEXT,
+            description TEXT,
+            article_url TEXT,
+            publisher_name TEXT,
+            published_utc TIMESTAMPTZ,
+            sentiment TEXT,
+            insights JSONB,
+            fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            INDEX idx_symbol_published (symbol, published_utc DESC)
         )
         """
     )
@@ -216,6 +238,110 @@ def delete_from_watchlist(symbol):
     )
     
     return jsonify({"symbol": symbol, "deleted": True})
+
+
+@app.route("/watchlist/<symbol>/news", methods=["GET"])
+def get_ticker_news(symbol):
+    """
+    Fetch recent news for a ticker from the Massive API and store it in the
+    news table. Returns the latest news articles for display.
+    """
+    ensure_news_table()
+    symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
+    
+    if not symbol or not _TICKER_RE.match(symbol):
+        return jsonify({"error": f"Invalid ticker symbol: {symbol!r}"}), 400
+    
+    # Get limit from query params (default 10, max 20 for UI display)
+    limit = min(int(request.args.get("limit", 10)), 20)
+    
+    client = MassiveClient()
+    try:
+        news_data = client.get_news(symbol, limit=limit)
+    except requests.HTTPError as e:
+        logger.exception(f"Failed to fetch news for {symbol}")
+        return jsonify({"error": f"Failed to fetch news: {str(e)}"}), 500
+    
+    results = news_data.get("results", [])
+    
+    if not results:
+        return jsonify({"symbol": symbol, "news": [], "count": 0})
+    
+    # Store each article in the database
+    import json as _json
+    stored_count = 0
+    
+    with lakebase.get_connection() as conn:
+        with conn.cursor() as cur:
+            for article in results:
+                article_id = article.get("id")
+                if not article_id:
+                    continue
+                
+                # Extract publisher name
+                publisher = article.get("publisher", {})
+                publisher_name = publisher.get("name") if isinstance(publisher, dict) else None
+                
+                # Extract sentiment from insights
+                insights = article.get("insights", [])
+                sentiment = None
+                if insights and isinstance(insights, list):
+                    for insight in insights:
+                        if isinstance(insight, dict) and insight.get("sentiment"):
+                            sentiment = insight.get("sentiment")
+                            break
+                
+                # Parse published timestamp
+                published_utc = article.get("published_utc")
+                
+                cur.execute(
+                    f"""
+                    INSERT INTO {NEWS_TABLE_NAME} 
+                    (article_id, symbol, title, description, article_url, 
+                     publisher_name, published_utc, sentiment, insights, fetched_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (article_id) DO UPDATE
+                        SET fetched_at = EXCLUDED.fetched_at
+                    """,
+                    (
+                        article_id,
+                        symbol,
+                        article.get("title"),
+                        article.get("description"),
+                        article.get("article_url"),
+                        publisher_name,
+                        published_utc,
+                        sentiment,
+                        _json.dumps(insights) if insights else None,
+                    ),
+                )
+                stored_count += 1
+            conn.commit()
+    
+    # Return the formatted news for display
+    formatted_news = [
+        {
+            "id": article.get("id"),
+            "title": article.get("title"),
+            "description": article.get("description"),
+            "url": article.get("article_url"),
+            "publisher": article.get("publisher", {}).get("name"),
+            "published_utc": article.get("published_utc"),
+            "sentiment": next(
+                (i.get("sentiment") for i in article.get("insights", []) 
+                 if isinstance(i, dict) and i.get("sentiment")),
+                None
+            )
+        }
+        for article in results
+    ]
+    
+    return jsonify({
+        "symbol": symbol,
+        "news": formatted_news,
+        "count": len(formatted_news),
+        "stored": stored_count
+    })
 
 
 def _extract_latest_price(data: dict) -> float | None:

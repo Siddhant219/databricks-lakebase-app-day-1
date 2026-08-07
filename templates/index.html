@@ -35,9 +35,26 @@
     tbody tr:hover { background: #f7fafc; transform: scale(1.01); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); }
     tbody tr:last-child td { border-bottom: none; }
     .price { font-weight: 600; color: #48bb78; font-size: 15px; }
-    .delete-btn { background: #fc8181; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s ease; }
+    .delete-btn { background: #fc8181; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s ease; margin-right: 5px; }
     .delete-btn:hover { background: #f56565; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(245, 101, 101, 0.3); }
     .delete-btn:active { transform: translateY(0); }
+    .news-btn { background: #4299e1; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s ease; }
+    .news-btn:hover { background: #3182ce; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(66, 153, 225, 0.3); }
+    .news-btn:active { transform: translateY(0); }
+    .news-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); z-index: 1000; justify-content: center; align-items: center; padding: 20px; }
+    .news-modal.show { display: flex; }
+    .news-content { background: white; border-radius: 12px; padding: 30px; max-width: 700px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
+    .news-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #e2e8f0; }
+    .news-title { font-size: 24px; font-weight: 700; color: #2d3748; }
+    .close-btn { background: #e2e8f0; color: #4a5568; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    .close-btn:hover { background: #cbd5e0; }
+    .news-article { padding: 15px; margin-bottom: 15px; background: #f7fafc; border-radius: 8px; border-left: 4px solid #4299e1; }
+    .news-article h3 { font-size: 16px; color: #2d3748; margin-bottom: 8px; }
+    .news-article p { font-size: 14px; color: #4a5568; line-height: 1.6; margin-bottom: 10px; }
+    .news-meta { display: flex; justify-content: space-between; font-size: 12px; color: #718096; }
+    .news-link { color: #4299e1; text-decoration: none; font-weight: 600; }
+    .news-link:hover { text-decoration: underline; }
+    .loading { text-align: center; padding: 20px; color: #718096; }
     @media (max-width: 640px) { .header { padding: 30px 20px; } h1 { font-size: 24px; } .content { padding: 20px; } .form-card { padding: 20px; } table { font-size: 12px; } th, td { padding: 12px 10px; } }
   </style>
 </head>
@@ -70,7 +87,7 @@
               <th>Email</th>
               <th>Latest Price</th>
               <th>Updated</th>
-              <th>Action</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="watchlist-body"></tbody>
@@ -79,10 +96,24 @@
     </div>
   </div>
 
+  <!-- News Modal -->
+  <div id="news-modal" class="news-modal">
+    <div class="news-content">
+      <div class="news-header">
+        <div class="news-title" id="news-modal-title">News</div>
+        <button class="close-btn" onclick="closeNewsModal()">Close</button>
+      </div>
+      <div id="news-articles"></div>
+    </div>
+  </div>
+
   <script>
     const form = document.getElementById("stock-form");
     const resultEl = document.getElementById("result");
     const watchlistBody = document.getElementById("watchlist-body");
+    const newsModal = document.getElementById("news-modal");
+    const newsModalTitle = document.getElementById("news-modal-title");
+    const newsArticles = document.getElementById("news-articles");
 
     function showMessage(message, type) {
       resultEl.textContent = message;
@@ -104,7 +135,7 @@
             ? `${Number(row.latest_price).toFixed(2)}`
             : "-";
           const updated = row.updated_at ? new Date(row.updated_at).toLocaleString() : "-";
-          tr.innerHTML = `<td><strong>${row.symbol}</strong></td><td>${row.email || "-"}</td><td class="price">${price}</td><td>${updated}</td><td><button class="delete-btn" data-symbol="${row.symbol}">Delete</button></td>`;
+          tr.innerHTML = `<td><strong>${row.symbol}</strong></td><td>${row.email || "-"}</td><td class="price">${price}</td><td>${updated}</td><td><button class="news-btn" data-symbol="${row.symbol}">News</button> <button class="delete-btn" data-symbol="${row.symbol}">Delete</button></td>`;
           watchlistBody.appendChild(tr);
         });
       } catch (err) {
@@ -157,10 +188,58 @@
       }
     }
 
+    async function fetchNews(symbol) {
+      newsModalTitle.textContent = `News for ${symbol}`;
+      newsArticles.innerHTML = '<div class="loading">Loading news...</div>';
+      newsModal.classList.add('show');
+
+      try {
+        const resp = await fetch(`/watchlist/${symbol}/news?limit=10`);
+        const data = await resp.json();
+        
+        if (!resp.ok) {
+          newsArticles.innerHTML = `<div class="news-article"><p>Error: ${data.error || resp.statusText}</p></div>`;
+          return;
+        }
+
+        if (data.count === 0) {
+          newsArticles.innerHTML = '<div class="news-article"><p>No recent news found for this ticker.</p></div>';
+          return;
+        }
+
+        newsArticles.innerHTML = data.news.map(article => `
+          <div class="news-article">
+            <h3>${article.title || 'Untitled'}</h3>
+            <p>${article.description || 'No description available.'}</p>
+            <div class="news-meta">
+              <span>${article.publisher || 'Unknown'} • ${article.published_utc ? new Date(article.published_utc).toLocaleDateString() : 'Unknown date'}</span>
+              <a href="${article.url}" target="_blank" class="news-link">Read More →</a>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        newsArticles.innerHTML = `<div class="news-article"><p>Failed to fetch news: ${err}</p></div>`;
+      }
+    }
+
+    function closeNewsModal() {
+      newsModal.classList.remove('show');
+    }
+
     watchlistBody.addEventListener('click', (e) => {
       if (e.target.classList.contains('delete-btn')) {
         const symbol = e.target.getAttribute('data-symbol');
         deleteFromWatchlist(symbol);
+      } else if (e.target.classList.contains('news-btn')) {
+        const symbol = e.target.getAttribute('data-symbol');
+        fetchNews(symbol);
+      }
+    });
+
+    // Close modal when clicking outside
+    newsModal.addEventListener('click', (e) => {
+      if (e.target === newsModal) {
+        closeNewsModal();
       }
     });
 
